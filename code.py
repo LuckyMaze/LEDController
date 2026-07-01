@@ -3,15 +3,17 @@ LED controller for a 64x64 HUB75 panel.
 
 Serial protocol over USB console:
 
-1. Send `INIT` to reset the controller state.
+1. Send `CLEAR` to reset the controller state.
 2. Send `GRID` and then 64 lines with 64 cells each.
    - `1`, `true`, `t`, `yes`, `open` mean walkable.
    - `0`, `false`, `f`, `no`, `wall` mean blocked.
 3. Send `MOVE x y` to move the yellow dot to an open coordinate.
+4. Send `TEXT [x y] message` to show text on top of the grid.
+5. Send `CLEAR` to blank the canvas and remove any text.
+6. Send `COLOR RRGGBB` to change the text color.
 
 Example:
 
-    INIT
     GRID
     000000...
     ... 64 lines total
@@ -25,6 +27,8 @@ import board
 import displayio
 import framebufferio
 import rgbmatrix
+import terminalio
+from adafruit_display_text.label import Label
 
 
 SIZE = 64
@@ -36,6 +40,8 @@ FLOOR = 0
 WALL = 1
 DOT = 2
 TARGET = 3
+
+DEFAULT_TEXT_COLOR = 0x00FF00
 
 
 def dim(color):
@@ -67,6 +73,12 @@ palette[TARGET] = dim(0x00FF00)
 bitmap = displayio.Bitmap(SIZE, SIZE, 4)
 group = displayio.Group()
 group.append(displayio.TileGrid(bitmap, pixel_shader=palette))
+
+text_label = Label(terminalio.FONT, text="", color=dim(DEFAULT_TEXT_COLOR))
+text_label.x = 2
+text_label.y = SIZE // 2
+group.append(text_label)
+
 display.root_group = group
 
 grid = [[False] * SIZE for _ in range(SIZE)]
@@ -74,8 +86,8 @@ dot_x = 0
 dot_y = 0
 target_x = 0
 target_y = 0
-initialized = False
 grid_loaded = False
+current_text_color = dim(DEFAULT_TEXT_COLOR)
 
 
 def write_line(text):
@@ -111,6 +123,32 @@ def render_map(highlight_target=True):
         bitmap[dot_x, dot_y] = DOT
 
 
+def clear_text():
+    text_label.text = ""
+
+
+def show_text(message, x=2, y=None):
+    text_label.color = current_text_color
+    text_label.text = message
+    text_label.x = x
+    text_label.y = SIZE // 2 if y is None else y
+
+
+def center_text(message):
+    show_text(message, 2, SIZE // 2)
+    bounds = text_label.bounding_box
+    text_label.x = max(0, (SIZE - bounds[2]) // 2)
+    text_label.y = max(bounds[3], (SIZE + bounds[3]) // 2)
+
+
+def scroll_text(message):
+    show_text(message, SIZE, SIZE // 2)
+    bounds = text_label.bounding_box
+    for x in range(SIZE, -bounds[2], -1):
+        text_label.x = x
+        time.sleep(MOVE_DELAY)
+
+
 def reset_state():
     global grid, dot_x, dot_y, target_x, target_y, grid_loaded
 
@@ -121,6 +159,22 @@ def reset_state():
     target_y = 0
     grid_loaded = False
     bitmap.fill(WALL)
+    clear_text()
+
+
+def clear_canvas():
+    reset_state()
+
+
+def parse_color(token):
+    token = token.strip().lower()
+    if token.startswith("#"):
+        token = token[1:]
+    if token.startswith("0x"):
+        token = token[2:]
+    if len(token) != 6:
+        raise ValueError("color must be RRGGBB")
+    return int(token, 16)
 
 
 def parse_bool_token(token):
@@ -269,21 +323,6 @@ while True:
     parts = command.split()
     name = parts[0].upper()
 
-    if not initialized:
-        if name != "INIT":
-            write_line("ERR NEED_INIT")
-            continue
-
-        initialized = True
-        reset_state()
-        write_line("OK INIT")
-        continue
-
-    if name == "INIT":
-        reset_state()
-        write_line("OK INIT")
-        continue
-
     if name == "GRID":
         try:
             load_grid_from_serial()
@@ -306,8 +345,7 @@ while True:
 
     if name == "STATUS":
         write_line(
-            "OK STATUS INIT={} GRID={} DOT={} {} TARGET={} {}".format(
-                initialized,
+            "OK STATUS GRID={} DOT={} {} TARGET={} {}".format(
                 grid_loaded,
                 dot_x,
                 dot_y,
@@ -318,8 +356,64 @@ while True:
         continue
 
     if name == "CLEAR":
-        reset_state()
+        clear_canvas()
         write_line("OK CLEAR")
+        continue
+
+    if name == "COLOR":
+        if len(parts) != 2:
+            write_line("ERR COLOR RRGGBB")
+            continue
+        try:
+            current_text_color = dim(parse_color(parts[1]))
+        except ValueError as exc:
+            write_line("ERR COLOR {}".format(exc))
+            continue
+        text_label.color = current_text_color
+        write_line("OK COLOR")
+        continue
+
+    if name == "TEXT":
+        if len(parts) >= 4:
+            try:
+                text_x = int(parts[1])
+                text_y = int(parts[2])
+                message = " ".join(parts[3:])
+            except ValueError:
+                text_x = 2
+                text_y = SIZE // 2
+                message = " ".join(parts[1:])
+        else:
+            text_x = 2
+            text_y = SIZE // 2
+            message = " ".join(parts[1:])
+
+        if not message:
+            write_line("ERR TEXT message")
+            continue
+
+        show_text(message, text_x, text_y)
+        write_line("OK TEXT")
+        continue
+
+    if name == "CENTER":
+        message = " ".join(parts[1:])
+        if not message:
+            write_line("ERR CENTER message")
+            continue
+
+        center_text(message)
+        write_line("OK CENTER")
+        continue
+
+    if name == "SCROLL":
+        message = " ".join(parts[1:])
+        if not message:
+            write_line("ERR SCROLL message")
+            continue
+
+        scroll_text(message)
+        write_line("OK SCROLL")
         continue
 
     write_line("ERR UNKNOWN_CMD")
