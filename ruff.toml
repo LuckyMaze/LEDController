@@ -1,0 +1,6 @@
+# This is CircuitPython for a Raspberry Pi Pico, not a general Python project - "board",
+# "displayio", "rgbmatrix" etc. only exist on the device and can't be installed here for a real
+# import check. Scoped to pyflakes' rules (E9, F): undefined names, unused imports/variables, and
+# syntax-adjacent errors - the class of bug worth catching before flashing. Style preferences
+# (import order, f-strings, exception style) are deliberately not enforced here.
+select = ["E9", "F"]
