@@ -38,7 +38,12 @@ The Pico reads commands from the USB serial console.
 1. Send `CLEAR` to reset the controller state.
 2. Send `GRID`.
 3. Send 64 rows of 64 cells each.
-4. Send `MOVE x y` to move the yellow dot to a walkable coordinate.
+4. Send `MOVE x y [size]` to place the yellow dot at a walkable coordinate. `size` (default 1) is
+   the side length of the square drawn around it - pass the maze's corridor width so the dot fills
+   it, matching a cell's own floor block.
+5. Send `EXIT x y width height` to mark a rectangle green, once per exit, after `GRID`, with
+   (x, y) as its top-left corner. Exits stay drawn - redrawn under the dot on every `MOVE` -
+   until the next `CLEAR`.
 
 ### Grid format
 
@@ -57,8 +62,9 @@ The controller replies with simple status lines:
 
 1. `OK CLEAR`
 2. `OK GRID`
-3. `OK MOVE x y`
-4. `ERR ...` for invalid commands or unreachable targets
+3. `OK MOVE x y` (echoes the coordinate, not the size)
+4. `OK EXIT x y` (echoes the coordinate, not the size)
+5. `ERR ...` for invalid commands or unreachable targets
 
 ### Example session
 
@@ -69,13 +75,15 @@ GRID
 0000000000000000000000000000000000000000000000000000000000000000
 ... 63 more rows ...
 OK GRID
-MOVE 12 9
+EXIT 0 8 3 2
+OK EXIT 0 8
+MOVE 12 9 2
 OK MOVE 12 9
 ```
 
 ## Notes
 
-The controller uses `1`/`true` cells as walkable space and paints them black, blocked cells blue, the current dot yellow, and the target coordinate green.
+The controller uses `1`/`true` cells as walkable space and paints them black, blocked cells blue, exits green, and the current dot yellow.
 
 ## Text overlay
 

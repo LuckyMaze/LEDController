@@ -7,17 +7,23 @@ Serial protocol over USB console:
 2. Send `GRID` and then 64 lines with 64 cells each.
    - `1`, `true`, `t`, `yes`, `open` mean walkable.
    - `0`, `false`, `f`, `no`, `wall` mean blocked.
-3. Send `MOVE x y` to move the yellow dot to an open coordinate.
-4. Send `TEXT [x y] message` to show text on top of the grid.
-5. Send `CLEAR` to blank the canvas and remove any text.
-6. Send `COLOR RRGGBB` to change the text color.
+3. Send `MOVE x y [size]` to move the yellow dot to an open coordinate. `size` (default 1) is the
+   side length of the square drawn around (x, y) - pass the maze's corridor width so the dot fills
+   it, the same way a cell's own floor block does.
+4. Send `EXIT x y width height` to mark a rectangle green and keep it marked - call once per exit,
+   after `GRID`, with (x, y) as its top-left corner. Exits stay drawn (redrawn under the dot on
+   every `MOVE`) until the next `CLEAR`.
+5. Send `TEXT [x y] message` to show text on top of the grid.
+6. Send `CLEAR` to blank the canvas, remove any text, and forget all exits.
+7. Send `COLOR RRGGBB` to change the text color.
 
 Example:
 
     GRID
     000000...
     ... 64 lines total
-    MOVE 12 9
+    EXIT 0 8 3 2
+    MOVE 12 9 2
 """
 
 import sys
@@ -39,7 +45,7 @@ MOVE_DELAY = 0.02
 FLOOR = 0
 WALL = 1
 DOT = 2
-TARGET = 3
+EXIT = 3
 
 DEFAULT_TEXT_COLOR = 0x00FF00
 
@@ -68,7 +74,7 @@ palette = displayio.Palette(4)
 palette[FLOOR] = 0x000000
 palette[WALL] = dim(0x1030C0)
 palette[DOT] = dim(0xFFFF00)
-palette[TARGET] = dim(0x00FF00)
+palette[EXIT] = dim(0x00FF00)
 
 bitmap = displayio.Bitmap(SIZE, SIZE, 4)
 group = displayio.Group()
@@ -84,8 +90,8 @@ display.root_group = group
 grid = [[False] * SIZE for _ in range(SIZE)]
 dot_x = 0
 dot_y = 0
-target_x = 0
-target_y = 0
+dot_size = 1
+exits = []
 grid_loaded = False
 current_text_color = dim(DEFAULT_TEXT_COLOR)
 
@@ -110,17 +116,67 @@ def first_open_cell():
     return 0, 0
 
 
-def render_map(highlight_target=True):
+def paint_rect(x0, y0, width, height, val):
+    """Paint a width x height rectangle with its top-left corner at (x0, y0), clipped to the panel."""
+    for dy in range(height):
+        y = y0 + dy
+        if not 0 <= y < SIZE:
+            continue
+        for dx in range(width):
+            x = x0 + dx
+            if 0 <= x < SIZE:
+                bitmap[x, y] = val
+
+
+def paint_block(cx, cy, size, val):
+    """Paint a size x size square centered on (cx, cy), clipped to the panel."""
+    half = size // 2
+    paint_rect(cx - half, cy - half, size, size, val)
+
+
+def draw_base():
+    """Draw the static grid once - no exits, no dot. Callers layer those on top afterward."""
     for y in range(SIZE):
         row = grid[y]
         for x in range(SIZE):
             bitmap[x, y] = FLOOR if row[x] else WALL
 
-    if highlight_target and is_walkable(target_x, target_y):
-        bitmap[target_x, target_y] = TARGET
 
-    if is_walkable(dot_x, dot_y):
-        bitmap[dot_x, dot_y] = DOT
+def base_color_at(x, y):
+    """What (x, y) should show with the dot removed: an exit if it's under one, else the grid."""
+    for ex, ey, ew, eh in exits:
+        if ex <= x < ex + ew and ey <= y < ey + eh:
+            return EXIT
+    return FLOOR if grid[y][x] else WALL
+
+
+def restore_rect(x0, y0, width, height):
+    """Repaint a rectangle from the grid/exits, e.g. to erase the dot without a full redraw."""
+    for dy in range(height):
+        y = y0 + dy
+        if not 0 <= y < SIZE:
+            continue
+        for dx in range(width):
+            x = x0 + dx
+            if 0 <= x < SIZE:
+                bitmap[x, y] = base_color_at(x, y)
+
+
+def restore_block(cx, cy, size):
+    half = size // 2
+    restore_rect(cx - half, cy - half, size, size)
+
+
+def mark_exit(x, y, width, height):
+    if not grid_loaded:
+        write_line("ERR NO_GRID")
+        return
+
+    width = max(1, width)
+    height = max(1, height)
+    exits.append((x, y, width, height))
+    paint_rect(x, y, width, height, EXIT)
+    write_line("OK EXIT {} {}".format(x, y))
 
 
 def clear_text():
@@ -150,13 +206,13 @@ def scroll_text(message):
 
 
 def reset_state():
-    global grid, dot_x, dot_y, target_x, target_y, grid_loaded
+    global grid, dot_x, dot_y, dot_size, exits, grid_loaded
 
     grid = [[False] * SIZE for _ in range(SIZE)]
     dot_x = 0
     dot_y = 0
-    target_x = 0
-    target_y = 0
+    dot_size = 1
+    exits = []
     grid_loaded = False
     bitmap.fill(WALL)
     clear_text()
@@ -203,7 +259,7 @@ def parse_grid_row(text):
 
 
 def load_grid_from_serial():
-    global grid, grid_loaded, dot_x, dot_y, target_x, target_y
+    global grid, grid_loaded, dot_x, dot_y
 
     new_grid = []
     for _ in range(SIZE):
@@ -218,61 +274,11 @@ def load_grid_from_serial():
     if not is_walkable(dot_x, dot_y):
         dot_x, dot_y = first_open_cell()
 
-    target_x, target_y = dot_x, dot_y
-    render_map()
+    draw_base()
 
 
-def neighbors(x, y):
-    if y > 0:
-        yield x, y - 1
-    if y < SIZE - 1:
-        yield x, y + 1
-    if x > 0:
-        yield x - 1, y
-    if x < SIZE - 1:
-        yield x + 1, y
-
-
-def find_path(start_x, start_y, end_x, end_y):
-    if (start_x, start_y) == (end_x, end_y):
-        return [(start_x, start_y)]
-
-    previous = [[None] * SIZE for _ in range(SIZE)]
-    visited = [[False] * SIZE for _ in range(SIZE)]
-    queue = [(start_x, start_y)]
-    head = 0
-    visited[start_y][start_x] = True
-
-    while head < len(queue):
-        x, y = queue[head]
-        head += 1
-
-        if (x, y) == (end_x, end_y):
-            break
-
-        for nx, ny in neighbors(x, y):
-            if not visited[ny][nx] and grid[ny][nx]:
-                visited[ny][nx] = True
-                previous[ny][nx] = (x, y)
-                queue.append((nx, ny))
-
-    if not visited[end_y][end_x]:
-        return None
-
-    path = [(end_x, end_y)]
-    current = previous[end_y][end_x]
-    while current is not None:
-        path.append(current)
-        if current == (start_x, start_y):
-            break
-        current = previous[current[1]][current[0]]
-
-    path.reverse()
-    return path
-
-
-def move_dot_to(x, y):
-    global dot_x, dot_y, target_x, target_y
+def move_dot_to(x, y, size=1):
+    global dot_x, dot_y, dot_size
 
     if not grid_loaded:
         write_line("ERR NO_GRID")
@@ -282,24 +288,20 @@ def move_dot_to(x, y):
         write_line("ERR TARGET_BLOCKED")
         return
 
-    if not is_walkable(dot_x, dot_y):
-        dot_x, dot_y = first_open_cell()
-
-    target_x = x
-    target_y = y
-
-    path = find_path(dot_x, dot_y, x, y)
-    if path is None:
-        write_line("ERR NO_PATH")
-        return
-
-    for step_x, step_y in path[1:]:
-        dot_x = step_x
-        dot_y = step_y
-        render_map()
-        time.sleep(MOVE_DELAY)
-
-    render_map()
+    # No pathfinding here - the caller already knows the maze and steps the dot one cell at a
+    # time, so this just places it. A prior version searched for a route and animated the dot
+    # along it, which meant a full breadth-first search over the 64x64 grid on every MOVE - on a
+    # Pico's ~264KB of RAM, alongside the RGB matrix's own buffers, that's a `MemoryError`,
+    # confirmed against real hardware. That crash isn't just a dropped command either: it's
+    # uncaught (only `ValueError` is handled around this call), so it can take the whole
+    # supervisor down mid-frame and leave the panel dark.
+    #
+    # Only touch the two spots that actually change - erase the old dot back to its real color,
+    # paint the new one - instead of redrawing all 4096 pixels on every step.
+    restore_block(dot_x, dot_y, dot_size)
+    dot_x, dot_y = x, y
+    dot_size = max(1, size)
+    paint_block(dot_x, dot_y, dot_size, DOT)
     write_line("OK MOVE {} {}".format(x, y))
 
 
@@ -334,23 +336,39 @@ while True:
         continue
 
     if name == "MOVE":
-        if len(parts) != 3:
-            write_line("ERR MOVE x y")
+        if len(parts) not in (3, 4):
+            write_line("ERR MOVE x y [size]")
             continue
         try:
-            move_dot_to(int(parts[1]), int(parts[2]))
+            move_x = int(parts[1])
+            move_y = int(parts[2])
+            move_size = int(parts[3]) if len(parts) == 4 else 1
+            move_dot_to(move_x, move_y, move_size)
         except ValueError:
-            write_line("ERR MOVE x y")
+            write_line("ERR MOVE x y [size]")
+        continue
+
+    if name == "EXIT":
+        if len(parts) != 5:
+            write_line("ERR EXIT x y width height")
+            continue
+        try:
+            exit_x = int(parts[1])
+            exit_y = int(parts[2])
+            exit_w = int(parts[3])
+            exit_h = int(parts[4])
+            mark_exit(exit_x, exit_y, exit_w, exit_h)
+        except ValueError:
+            write_line("ERR EXIT x y width height")
         continue
 
     if name == "STATUS":
         write_line(
-            "OK STATUS GRID={} DOT={} {} TARGET={} {}".format(
+            "OK STATUS GRID={} DOT={} {} SIZE={}".format(
                 grid_loaded,
                 dot_x,
                 dot_y,
-                target_x,
-                target_y,
+                dot_size,
             )
         )
         continue
