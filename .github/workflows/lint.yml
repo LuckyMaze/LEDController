@@ -1,0 +1,30 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      # A real import check is meaningless here - board, displayio, rgbmatrix etc. only exist on
+      # the Pico's CircuitPython firmware, not on this runner. This just confirms the file parses.
+      - name: Syntax check
+        run: python -m py_compile code.py
+
+      - name: Install ruff
+        run: pip install ruff
+
+      # Ruleset scoped in ruff.toml to pyflakes' rules (E9, F): undefined names, unused
+      # imports/variables - real bugs, not style preferences.
+      - name: Lint
+        run: ruff check code.py
