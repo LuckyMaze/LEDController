@@ -2,6 +2,35 @@
 
 This repo contains the CircuitPython controller for a 64x64 HUB75 LED panel.
 
+## Installing on the Pico
+
+1. Flash CircuitPython onto the Raspberry Pi Pico: hold BOOTSEL while plugging it in, then drag
+   the `.uf2` from [circuitpython.org/board/raspberry_pi_pico](https://circuitpython.org/board/raspberry_pi_pico/)
+   onto the `RPI-RP2` drive that appears. It reboots as a `CIRCUITPY` drive.
+2. Copy `adafruit_display_text` from the
+   [Adafruit CircuitPython bundle](https://circuitpython.org/libraries) (matching your CircuitPython
+   version) into `CIRCUITPY/lib/`. It's the only dependency `code.py` needs.
+3. Copy this repo's `code.py` to the root of `CIRCUITPY`, replacing the sample one CircuitPython
+   ships with. It runs automatically on boot/reset - no `boot.py` is needed, the default single USB
+   serial console is enough for both the REPL and this protocol.
+4. Wire the HUB75 panel to the pins `code.py` expects:
+
+   | Panel signal | Pico pin |
+   |---|---|
+   | R1, G1, B1, R2, G2, B2 | GP0-GP5 |
+   | A, B, C, D, E (row address) | GP6, GP7, GP8, GP13, GP9 |
+   | CLK | GP10 |
+   | LAT | GP11 |
+   | OE | GP12 |
+
+   Power the panel from its own 5V supply, not the Pico's USB rail - HUB75 panels draw far more
+   current than USB can provide.
+5. Plug the Pico in over USB. It enumerates as a serial device; find its stable path with
+   `ls /dev/serial/by-id/` on Linux (`/dev/ttyACM0` shifts if anything else is plugged in first).
+6. Sanity check without any other software involved: open a serial terminal at 115200 baud and
+   send `CLEAR` then `GRID` followed by 64 rows of `0`/`1` - you should get `OK CLEAR` / `OK GRID`
+   back and see the panel light up.
+
 ## Serial protocol
 
 The Pico reads commands from the USB serial console.
